@@ -2,7 +2,16 @@
 
 A local MCP server that manages a Japanese-learning review queue backed by an Obsidian vault. It runs as a child process of Claude Desktop, speaking MCP over stdio — no database, no network service, no port.
 
-See [ARCHITECTURE.md](ARCHITECTURE.md) for the build rationale and [CONTRACT.md](CONTRACT.md) for the data shapes and tool behaviour.
+For contributors: see [.agent/ARCHITECTURE.md](.agent/ARCHITECTURE.md) for the build rationale and [.agent/CONTRACT.md](.agent/CONTRACT.md) for the data shapes and tool behaviour.
+
+## What you can do with it
+
+Once wired into Claude Desktop, ask Claude in plain language — it picks the right tool:
+
+- **Review what you're forgetting** — "quiz me on what's due" pulls the items most in need of review and updates your schedule based on how you do.
+- **Practice words you've already mastered** — "test me on food words I already know" gathers solid items around a theme, proposes a short practice conversation, runs it, then records how it went.
+- **Add something new** — "I just learned 〜てしまう" files it, filling in the reading, meaning, and JLPT level for you.
+- **Import your Bunpro export** — hand Claude a CSV export and it bulk-loads it into the vault.
 
 ## Setup
 
@@ -20,8 +29,6 @@ This installs to `~/.local/bin/uv`. Confirm `~/.local/bin` is on your `PATH` for
 cd bunpro-mcp
 uv sync
 ```
-
-This creates `.venv/` with a pinned Python 3.11+ interpreter and the exact locked dependencies (`mcp`, `pydantic`, `python-frontmatter`, `pyyaml`, plus `pytest` for the dev group).
 
 ### 3. Point it at a vault folder
 
@@ -45,8 +52,6 @@ Japanese/
 uv run pytest
 ```
 
-41 tests cover `scoring.py` (pure maths, no disk) and `vault.py` / `ingest.py` (against temp vaults via `tmp_path`). `server.py` is intentionally thin and is checked by hand instead (see below).
-
 ## Manual verification (before wiring into Claude Desktop)
 
 Start the server under the MCP Inspector — a local UI for calling tools by hand with no model involved:
@@ -57,6 +62,8 @@ VAULT_PATH=/tmp/test-vault uv run mcp dev src/bunpro_mcp/server.py
 ```
 
 In the Inspector: call `import_export` with `csv_path` pointing at `fixtures/sample_bunpro.csv` (dry run first, then for real), then `get_review_queue`, `get_item`, and `submit_grades`, and confirm the queue ordering changes after grading.
+
+To try `get_practice_pool` (the mastered-words practice mode), first give it some well-known items — import the sample telling it you already know those words well, or grade a few items `4` a couple of times. Then call `get_practice_pool` and confirm it returns those mastered items, strongest-first, with the weaker ones absent.
 
 ## Wiring into Claude Desktop
 
@@ -82,12 +89,11 @@ Create it if it doesn't exist, and add (replacing `<user>` and the paths with yo
 
 Use absolute paths throughout — the server is launched from an unknown working directory, so nothing relative is safe.
 
-**After editing the config, fully quit and relaunch Claude Desktop** (closing the window is not enough). The five tools — `get_review_queue`, `get_item`, `submit_grades`, `add_item`, `import_export` — then appear under the connectors/tools menu.
+**After editing the config, fully quit and relaunch Claude Desktop** (closing the window is not enough). The six tools — `get_review_queue`, `get_practice_pool`, `get_item`, `submit_grades`, `add_item`, `import_export` — then appear under the connectors/tools menu.
 
 If the server doesn't show up, check Claude Desktop's MCP logs at `~/.config/Claude/logs/`. Usual culprits: a wrong absolute path, `VAULT_PATH` pointing nowhere, or a startup exception.
 
 ## Notes
 
-- **This is not real FSRS.** The scoring in `scoring.py` is a transparent stand-in with the right shape, chosen so the review ordering is eyeball-checkable. Swapping in real FSRS later only touches that one file.
-- **Nothing is ever deleted.** Retirement is the `suspended` flag, not file deletion.
-- **Remote access (web/mobile) is deliberately out of scope for this pass** — see Appendix A of `ARCHITECTURE.md` if that's ever needed.
+- **Nothing is ever deleted.** Items you're done with are suspended, never removed from the vault.
+- **Remote access (web/mobile) is deliberately out of scope for this pass** — see Appendix A of [.agent/ARCHITECTURE.md](.agent/ARCHITECTURE.md) if that's ever needed.

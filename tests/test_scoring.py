@@ -1,7 +1,15 @@
 from datetime import date, timedelta
 
 from bunpro_mcp.models import Item, MemoryState, QueueEntry
-from bunpro_mcp.scoring import apply_grade, clamp, priority, retrievability, to_queue_entry
+from bunpro_mcp.scoring import (
+    MASTERY_STABILITY_DAYS,
+    apply_grade,
+    clamp,
+    is_mastered,
+    priority,
+    retrievability,
+    to_queue_entry,
+)
 
 TODAY = date(2026, 7, 15)
 
@@ -118,6 +126,19 @@ def test_to_queue_entry_reviewed_uses_days_since_review():
 
     assert entry.days_since_review == 3
     assert entry.retrievability == retrievability(8.0, 3)
+
+
+def test_is_mastered_at_and_above_threshold():
+    assert is_mastered(_item("vocab-a-a", stability=MASTERY_STABILITY_DAYS)) is True
+    assert is_mastered(_item("vocab-a-a", stability=MASTERY_STABILITY_DAYS + 100)) is True
+
+
+def test_is_not_mastered_below_threshold():
+    assert is_mastered(_item("vocab-a-a", stability=MASTERY_STABILITY_DAYS - 0.1)) is False
+
+
+def test_never_reviewed_default_item_is_not_mastered():
+    assert is_mastered(_item("vocab-a-a")) is False  # default stability 1.0
 
 
 def _entry(**overrides) -> QueueEntry:

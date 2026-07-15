@@ -6,7 +6,7 @@
 
 ## 1. What this is
 
-A single Python program launched as a child process by Claude Desktop, speaking MCP over stdio. Five tools let Claude read a review queue, inspect an item, record review grades, add new items, and bulk-import a Bunpro CSV export. All state lives in plain `.md` files in an Obsidian vault folder — no database, no network service, no port.
+A single Python program launched as a child process by Claude Desktop, speaking MCP over stdio. Six tools let Claude read a review queue, pull a pool of already-mastered items for themed practice, inspect an item, record review grades, add new items, and bulk-import a Bunpro CSV export. All state lives in plain `.md` files in an Obsidian vault folder — no database, no network service, no port.
 
 It does not run continuously and does not bind a socket. Claude Desktop starts it, talks to it over stdio, kills it on exit.
 
@@ -34,14 +34,15 @@ It does not run continuously and does not bind a socket. Claude Desktop starts i
 ```
 bunpro-mcp/
 ├── pyproject.toml
-├── .agent/{ARCHITECTURE,CONTRACT,README}.md
+├── README.md        # user-facing setup + usage
+├── .agent/{ARCHITECTURE,CONTRACT}.md
 ├── src/bunpro_mcp/
 │   ├── models.py    # data shapes; imports nothing local
 │   ├── scoring.py   # pure maths; imports models only
 │   ├── vault.py     # the ONLY module that touches the filesystem
 │   ├── ingest.py    # CSV + single-item ingest; imports vault, models
 │   └── server.py    # MCP tools; imports everything below; entry point
-├── tests/{test_scoring,test_vault,test_ingest}.py
+├── tests/{test_scoring,test_vault,test_ingest,test_server}.py
 └── fixtures/sample_bunpro.csv
 ```
 
@@ -57,7 +58,7 @@ This is why `scoring` tests with no disk, `vault` tests against a temp folder wi
 Pure Pydantic data, no behaviour. `Kind`, `Source`, `Level`, `GradeVal`, `Progress` literals; `MemoryState`, `Item`, `QueueEntry`, `Grade`, plus the tool-response models (`QueueResponse`, `ItemDetail`, `GradeReport`, `AddReport`, `ImportReport`). `Item` (on-disk truth, carries `stability`/`difficulty`) and `QueueEntry` (derived view, does not) are deliberately separate — see `CONTRACT.md` §4.
 
 ### `scoring.py`
-Pure functions, no filesystem or clock access — every date is an argument. `retrievability`, `priority`, `apply_grade`, `clamp`, and the assembler `to_queue_entry` (turns a stored `Item` into a scored `QueueEntry`; nothing it computes is persisted). Full formulas in `CONTRACT.md` §5.
+Pure functions, no filesystem or clock access — every date is an argument. `retrievability`, `priority`, `apply_grade`, `clamp`, `is_mastered` (the `get_practice_pool` eligibility bar — a stability threshold, `MASTERY_STABILITY_DAYS`), and the assembler `to_queue_entry` (turns a stored `Item` into a scored `QueueEntry`; nothing it computes is persisted). Full formulas in `CONTRACT.md` §5.
 
 **Not real FSRS** — a transparent stand-in with the right shape, kept because it's eyeball-checkable and has zero local dependencies, so swapping in real FSRS later touches nothing else. Do not swap it in without being asked.
 
@@ -68,7 +69,7 @@ The only module allowed to touch the filesystem. Builds an id→path index from 
 All Bunpro-format knowledge lives here and nowhere else. The CSV importer is **vocab-only** — the real export (zyaga Bunpro Exporter userscript) has just `word`, `reading` (usually absent), `description`, `progress`. `BUCKET_SEED` maps a Bunpro `progress` bucket (Beginner…Master) to a starting `stability` — creation-only, never `difficulty`, shared between the CSV path (`parse_bunpro_csv`/`import_export`) and the conversational path (`make_item`, via `add_item`'s `progress` argument) through one helper, `_seed_memory_state`. Full contract in `CONTRACT.md` §7.
 
 ### `server.py`
-Declares the five `@mcp.tool()` functions, reads `VAULT_PATH` from env and constructs `Vault` once at import time (fails loudly if unset/invalid, not on first call), stamps `today = date.today()` itself for grades/adds/imports (never accepted as a tool argument). Docstrings are copied verbatim from `CONTRACT.md` §6 — they're the interface Claude reads to decide when/how to call each tool, not decoration.
+Declares the six `@mcp.tool()` functions, reads `VAULT_PATH` from env and constructs `Vault` once at import time (fails loudly if unset/invalid, not on first call), stamps `today = date.today()` itself for grades/adds/imports (never accepted as a tool argument). Docstrings are copied verbatim from `CONTRACT.md` §6 — they're the interface Claude reads to decide when/how to call each tool, not decoration.
 
 ---
 

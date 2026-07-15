@@ -146,6 +146,13 @@ class Grade(BaseModel):
     item_id: str
     grade: GradeVal
     error_note: str | None = None
+
+
+class PracticePoolResponse(BaseModel):
+    generated_at: date
+    total_mastered: int      # everything over the mastery bar in the vault
+    returned: int
+    pool: list[QueueEntry]   # reuses QueueEntry; stability stays hidden
 ```
 
 `Item` is on-disk truth; `QueueEntry` is the derived view Claude sees, deliberately without `stability`/`difficulty` (implementation detail Claude shouldn't reason about).
@@ -187,6 +194,14 @@ def apply_grade(state: MemoryState, grade: GradeVal, today: date, error_note: st
                         reps=state.reps + 1, lapses=lapses, last_error=error_note)
 ```
 
+```python
+MASTERY_STABILITY_DAYS = 21.0   # Bunpro "Seasoned" seed
+
+def is_mastered(item: Item) -> bool:
+    return item.memory.stability >= MASTERY_STABILITY_DAYS
+```
+The eligibility bar for themed practice (§6, `get_practice_pool`): stability alone, no date needed, no lapse guard. Same "starting guess, tune after a real session" status as `BUCKET_SEED` — nothing principled about 21.0 beyond matching the Seasoned bucket. Suspended-filtering is the caller's job, not this predicate's.
+
 **Not real FSRS** — a transparent, predictable stand-in. Ordering should look sane on eyeball; tune constants with real data, swap in real FSRS later if desired — nothing else in the system has to change, since this file has no local dependencies.
 
 ---
@@ -199,6 +214,11 @@ Docstrings shown are the actual interface text Claude reads — not documentatio
 > Get the Japanese items most in need of review right now, ordered by priority. Call this at the start of a review session. Returns grammar points and vocabulary with a freshness score for each, plus a note on how the learner last got it wrong.
 
 `QueueResponse`: `generated_at`, `total_items` (everything in vault, not just returned), `returned`, `grammar_focus` (top 2–3 grammar ids), `queue`. Empty vault → empty queue, not an error.
+
+### `get_practice_pool(limit: int = 60, kind: Literal["grammar","vocab","both"] = "both") -> PracticePoolResponse`
+> Get a pool of Japanese words and grammar the learner has ALREADY mastered, for active-use practice — the opposite of the review queue. Use this when the learner wants to be tested on or practice words they already know, not review what they're forgetting. Workflow: (1) ideate a concrete conversation theme or scenario (ordering at an izakaya, complaining about the weather, a job interview); (2) call this to get the mastered pool; (3) the pool is NOT pre-filtered by theme — from it, you pick the words and grammar that fit your theme, using each item's meaning; (4) propose the scenario and your chosen words to the learner and get their buy-in before starting; (5) run the practice conversation; (6) at the end, call submit_grades once for every item you practiced — grade fluent use 3 or 4, hesitation 2, and a blank or misuse 1 with a one-sentence error_note. Returns each item with its meaning and reading so you can select by theme.
+
+The inverse of `get_review_queue`: pulls the *strongest* items, not the weakest. Eligibility is `is_mastered` (§5, `stability ≥ 21`); suspended items are excluded first. Sorted by `stability` descending (strongest first), capped at `limit`. `PracticePoolResponse`: `generated_at`, `total_mastered` (all mastered non-suspended items in the vault, kind-agnostic, like `total_items`), `returned`, `pool`. **Read-only** — this tool never writes; feedback flows back only through the model's follow-up `submit_grades` call. Empty pool (nothing mastered yet) → empty `pool`, not an error.
 
 ### `get_item(item_id: str) -> ItemDetail`
 > Get everything known about one Japanese grammar point or word, including the learner's own notes from their vault.
@@ -270,5 +290,5 @@ Logging goes to stderr, never stdout.
 ## 9. Open questions
 
 - **Avoidance.** Reaching for たら when ば was the opening is arguably a lapse, but nothing in `Grade` can express it. Worth a fifth grade value or a separate flag once it's clear Claude reliably notices.
-- **Retiring items.** `suspended` is a blunt instrument; something genuinely mastered should probably leave the queue on its own.
+- **Retiring items.** `suspended` is a blunt instrument; something genuinely mastered should probably leave the queue on its own. *Partly addressed:* `get_practice_pool` (§6) gives mastered items a purpose beyond the review queue, but it doesn't yet remove them from it — a word can still surface in both.
 - **`BUCKET_SEED` constants are a guess**, chosen to make the first real queue *feel* right rather than derived from anything principled. Revisit after eyeballing a real import.

@@ -12,8 +12,16 @@ from datetime import date
 from bunpro_mcp.models import GradeVal, Item, MemoryState, QueueEntry
 
 
+MASTERY_STABILITY_DAYS = 21.0  # Bunpro "Seasoned" seed. A guess; tune after a real session.
+
+
 def clamp(x: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, x))
+
+
+def is_mastered(item: Item) -> bool:
+    """True if the item is retention-solid enough to practice rather than review."""
+    return item.memory.stability >= MASTERY_STABILITY_DAYS
 
 
 def retrievability(stability: float, elapsed_days: float) -> float:

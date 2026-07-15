@@ -74,6 +74,13 @@ class QueueResponse(BaseModel):
     queue: list[QueueEntry]
 
 
+class PracticePoolResponse(BaseModel):
+    generated_at: date
+    total_mastered: int  # everything over the mastery bar in the vault
+    returned: int
+    pool: list[QueueEntry]
+
+
 class GradeReport(BaseModel):
     updated: int
     unknown_ids: list[str]

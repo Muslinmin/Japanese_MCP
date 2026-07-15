@@ -29,10 +29,11 @@ from bunpro_mcp.models import (  # noqa: E402
     ItemDetail,
     Kind,
     Level,
+    PracticePoolResponse,
     Progress,
     QueueResponse,
 )
-from bunpro_mcp.scoring import apply_grade, to_queue_entry  # noqa: E402
+from bunpro_mcp.scoring import apply_grade, is_mastered, to_queue_entry  # noqa: E402
 from bunpro_mcp.vault import Vault  # noqa: E402
 
 logger = logging.getLogger(__name__)
@@ -86,6 +87,39 @@ def get_review_queue(
         returned=len(queue),
         grammar_focus=grammar_focus,
         queue=queue,
+    )
+
+
+@mcp.tool()
+def get_practice_pool(
+    limit: int = 60,
+    kind: Literal["grammar", "vocab", "both"] = "both",
+) -> PracticePoolResponse:
+    """Get a pool of Japanese words and grammar the learner has ALREADY
+    mastered, for active-use practice — the opposite of the review queue.
+    Use this when the learner wants to be tested on or practice words they
+    already know, not review what they're forgetting. Workflow: (1) ideate a
+    concrete conversation theme or scenario (ordering at an izakaya,
+    complaining about the weather, a job interview); (2) call this to get the
+    mastered pool; (3) the pool is NOT pre-filtered by theme — from it, you
+    pick the words and grammar that fit your theme, using each item's meaning;
+    (4) propose the scenario and your chosen words to the learner and get
+    their buy-in before starting; (5) run the practice conversation; (6) at
+    the end, call submit_grades once for every item you practiced — grade
+    fluent use 3 or 4, hesitation 2, and a blank or misuse 1 with a
+    one-sentence error_note. Returns each item with its meaning and reading so
+    you can select by theme."""
+    today = date.today()
+    mastered = [i for i in vault.load_all() if not i.suspended and is_mastered(i)]
+    selected = mastered if kind == "both" else [i for i in mastered if i.kind == kind]
+    selected.sort(key=lambda i: i.memory.stability, reverse=True)
+    pool = [to_queue_entry(i, today) for i in selected[:limit]]
+
+    return PracticePoolResponse(
+        generated_at=today,
+        total_mastered=len(mastered),
+        returned=len(pool),
+        pool=pool,
     )
 
 

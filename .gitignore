@@ -17,6 +17,8 @@ ENV/
 .env
 .env.local
 .env.*.local
+.csv
+.xlsx
 
 # IDEs and OS files
 .vscode/

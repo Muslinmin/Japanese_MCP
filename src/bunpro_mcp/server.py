@@ -18,11 +18,23 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
 )
 
+from mcp.server.auth.settings import (  # noqa: E402
+    AuthSettings,
+    ClientRegistrationOptions,
+    RevocationOptions,
+)
 from mcp.server.fastmcp import FastMCP  # noqa: E402
 from starlette.responses import JSONResponse  # noqa: E402
 
 from bunpro_mcp import ingest  # noqa: E402
-from bunpro_mcp.auth import BearerAuthMiddleware, require_token_env  # noqa: E402
+from bunpro_mcp.auth import (  # noqa: E402
+    SCOPE,
+    StatelessOAuthProvider,
+    login_page,
+    login_submit,
+    public_url,
+    require_token_env,
+)
 from bunpro_mcp.ingest import make_item  # noqa: E402
 from bunpro_mcp.models import (  # noqa: E402
     AddReport,
@@ -102,7 +114,33 @@ mcp = FastMCP(
     # request and there are no sessions to lose when the platform scales to
     # zero between reviews.
     stateless_http=True,
+    # The SDK serves /authorize, /token, /register, /revoke and both
+    # discovery documents from this; auth.py supplies only the parts it
+    # can't know — where credentials live and who the user is.
+    auth=AuthSettings(
+        issuer_url=public_url(),
+        resource_server_url=public_url(),
+        client_registration_options=ClientRegistrationOptions(
+            # Claude registers itself dynamically; there is no console here
+            # in which to pre-create a client.
+            enabled=True,
+            valid_scopes=[SCOPE],
+            default_scopes=[SCOPE],
+        ),
+        revocation_options=RevocationOptions(enabled=True),
+        # No required scopes: a token this server issued is a token from
+        # the one person who knows the password. Demanding a scope only
+        # adds a way for a client that requested none to be locked out.
+        required_scopes=None,
+    ),
+    auth_server_provider=StatelessOAuthProvider(),
 )
+
+
+# Both are public by design — the SDK protects /mcp, and custom routes are
+# mounted outside that. A login page behind auth could not be logged into.
+mcp.custom_route("/login", methods=["GET"])(login_page)
+mcp.custom_route("/login", methods=["POST"])(login_submit)
 
 
 @mcp.custom_route("/health", methods=["GET"])
@@ -279,9 +317,10 @@ def main() -> None:
     import uvicorn
 
     require_token_env()
-    app = mcp.streamable_http_app()
-    app.add_middleware(BearerAuthMiddleware)
-    uvicorn.run(app, host="0.0.0.0", port=_port())
+    # No middleware to add: the SDK wraps /mcp in RequireAuthMiddleware
+    # itself once auth is configured, and /health and /login are meant to
+    # be reachable without a credential.
+    uvicorn.run(mcp.streamable_http_app(), host="0.0.0.0", port=_port())
 
 
 if __name__ == "__main__":

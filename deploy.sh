@@ -105,7 +105,20 @@ if [[ -n "$SEED_PATH" ]]; then
   fi
 fi
 
-# --- 4. deploy ---------------------------------------------------------------
+# --- 4. grant the runtime service account read access to the secret ----------
+# The Cloud Run revision runs as this SA and reads MCP_AUTH_TOKEN from Secret
+# Manager at startup. Without secretAccessor on the secret, the deploy fails
+# with "Permission denied on secret". This must happen BEFORE the deploy.
+PROJECT_NUM="$(gcloud projects describe "$PROJECT" --format='value(projectNumber)')"
+RUNTIME_SA="${RUNTIME_SA:-${PROJECT_NUM}-compute@developer.gserviceaccount.com}"
+echo "==> Granting roles/secretmanager.secretAccessor on $SECRET to $RUNTIME_SA..."
+gcloud secrets add-iam-policy-binding "$SECRET" \
+  --project "$PROJECT" \
+  --member="serviceAccount:${RUNTIME_SA}" \
+  --role="roles/secretmanager.secretAccessor" \
+  --condition=None >/dev/null
+
+# --- 5. deploy ---------------------------------------------------------------
 # --allow-unauthenticated is intentional: Claude can't mint Google IAM tokens,
 # so the bearer token (from Secret Manager) is the real gate. Every route but
 # /health returns 401 without it. The secret goes via --set-secrets, never
@@ -122,19 +135,29 @@ gcloud run deploy "$SERVICE" \
   --set-env-vars "VAULT_BUCKET=$VAULT_BUCKET,TZ=$TZ_VALUE" \
   --set-secrets "MCP_AUTH_TOKEN=$SECRET:latest"
 
-# --- 5. scope the service account to this bucket only ------------------------
+# --- 6. scope the service account to this bucket only ------------------------
 SA="$(gcloud run services describe "$SERVICE" --project "$PROJECT" --region "$REGION" \
   --format='value(spec.template.spec.serviceAccountName)')"
-if [[ -z "$SA" ]]; then
-  PROJECT_NUM="$(gcloud projects describe "$PROJECT" --format='value(projectNumber)')"
-  SA="${PROJECT_NUM}-compute@developer.gserviceaccount.com"
-fi
+[[ -n "$SA" ]] || SA="$RUNTIME_SA"
 echo "==> Granting roles/storage.objectAdmin on gs://$VAULT_BUCKET to $SA (bucket-scoped only)..."
 gsutil iam ch "serviceAccount:${SA}:roles/storage.objectAdmin" "gs://$VAULT_BUCKET"
 
-# --- 6. health check ---------------------------------------------------------
+# --- 7. health check ---------------------------------------------------------
 URL="$(gcloud run services describe "$SERVICE" --project "$PROJECT" --region "$REGION" \
   --format='value(status.url)')"
+
+# OAuth discovery advertises MCP_PUBLIC_URL as the issuer, and clients compare
+# it against the URL they dialled — a mismatch fails the connection. The URL
+# only exists after the first deploy, so set it now and skip the update on
+# every subsequent run.
+CURRENT_PUBLIC_URL="$(gcloud run services describe "$SERVICE" --project "$PROJECT" --region "$REGION" \
+  --format='value(spec.template.spec.containers[0].env.filter("name":"MCP_PUBLIC_URL").extract("value").flatten())' 2>/dev/null || true)"
+if [[ "$CURRENT_PUBLIC_URL" != "$URL" ]]; then
+  echo "==> Setting MCP_PUBLIC_URL=$URL (OAuth issuer) and redeploying that revision..."
+  gcloud run services update "$SERVICE" --project "$PROJECT" --region "$REGION" \
+    --update-env-vars "MCP_PUBLIC_URL=$URL"
+fi
+
 echo
 echo "==> Deployed. Service URL: $URL"
 echo "==> Health check:"
@@ -148,11 +171,12 @@ fi
 cat <<EOF
 
 Next steps:
-  1. Get the bearer token:
+  1. Get the server token (it is the password on the login page):
        gcloud secrets versions access latest --secret=$SECRET --project=$PROJECT
-  2. In Claude settings, add a custom connector:
-       URL:    $URL
-       Header: Authorization: Bearer <token>
+  2. In Claude settings, Add custom connector:
+       URL: $URL/mcp
+     Claude registers itself and opens a login page; paste the token there.
+     Leave the Advanced OAuth Client ID / Secret fields empty.
   3. (If you didn't seed) load notes with:
        ./deploy.sh --seed ~/Obsidian/Japanese --dry-run-seed
        ./deploy.sh --seed ~/Obsidian/Japanese

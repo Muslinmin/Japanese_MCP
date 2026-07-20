@@ -8,7 +8,6 @@ exchange — and any step returning the wrong shape fails silently as
 
 import base64
 import hashlib
-import os
 import re
 import secrets
 from pathlib import Path

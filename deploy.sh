@@ -87,7 +87,11 @@ if gcloud secrets describe "$SECRET" --project "$PROJECT" >/dev/null 2>&1; then
   echo "==> Secret $SECRET already exists (leaving its value untouched)."
 else
   echo "==> Creating secret $SECRET with a fresh random token..."
-  openssl rand -base64 32 | gcloud secrets create "$SECRET" \
+  # tr -d '\n' is load-bearing: openssl appends a trailing newline, and piping
+  # it straight in would store the newline as part of the token. That token can
+  # then never be typed into the OAuth login form (the pasted value has no
+  # newline), so every login would fail with "token is not correct".
+  openssl rand -base64 32 | tr -d '\n' | gcloud secrets create "$SECRET" \
     --project "$PROJECT" --data-file=-
   echo "    A new bearer token was generated. Retrieve it after deploy with:"
   echo "    gcloud secrets versions access latest --secret=$SECRET --project=$PROJECT"

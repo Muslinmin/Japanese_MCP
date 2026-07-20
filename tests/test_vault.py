@@ -34,9 +34,9 @@ def test_upsert_creates_new_note(tmp_path: Path):
     created = vault.upsert(item)
 
     assert created is True
-    path = vault.path_for(item)
-    assert path.exists()
-    assert "Vocab" in str(path)
+    key = vault.path_for(item)  # a vault-relative key, not an absolute path
+    assert (tmp_path / key).exists()
+    assert key.startswith("Vocab/")
 
 
 def test_round_trip_write_then_read_back(tmp_path: Path):
@@ -148,10 +148,10 @@ def test_path_for_appends_reading_on_filename_collision(tmp_path: Path):
     vault.upsert(item_a)
 
     item_b = make_item(id_="vocab-同じ-べつ", surface="同じ", reading="べつ")
-    path_b = vault.path_for(item_b)
+    key_b = vault.path_for(item_b)
 
-    assert path_b != vault.path_for(item_a)
-    assert "べつ" in path_b.name
+    assert key_b != vault.path_for(item_a)
+    assert "べつ" in key_b
 
 
 def test_path_for_existing_item_returns_current_location_even_if_renamed(tmp_path: Path):
@@ -159,10 +159,10 @@ def test_path_for_existing_item_returns_current_location_even_if_renamed(tmp_pat
     item = make_item()
     vault.upsert(item)
 
-    original_path = vault.path_for(item)
+    original_path = tmp_path / vault.path_for(item)
     renamed_path = original_path.parent / "renamed-by-user.md"
     original_path.rename(renamed_path)
 
     vault2 = Vault(tmp_path)
-    assert vault2.path_for(item) == renamed_path
+    assert vault2.path_for(item) == "Vocab/renamed-by-user.md"
     assert vault2.get(item.id) is not None

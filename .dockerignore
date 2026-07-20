@@ -1,0 +1,18 @@
+# .venv is checked in and is a different Python than the image — copying it
+# both bloats the image and shadows the one uv builds inside it.
+.venv/
+.git/
+.gitignore
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+
+# Never bake notes or credentials into an image.
+.env
+fixtures/
+tests/
+scripts/
+*.csv
+*.md
+!README.md

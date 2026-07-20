@@ -7,7 +7,12 @@ dependencies = [
     "pydantic>=2.6",
     "python-frontmatter>=1.1",
     "pyyaml>=6.0",
+    "google-cloud-storage>=2.18",
+    "uvicorn>=0.30",
 ]
+
+[project.scripts]
+bunpro-mcp = "bunpro_mcp.server:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

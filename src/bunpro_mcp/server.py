@@ -1,15 +1,16 @@
 """The front door. Declares tools, validates, hands off to lower modules.
 
-Never write to stdout — stdout is the MCP protocol channel. Logging is
-configured to stderr before anything else happens.
+Served over streamable HTTP behind a bearer token (see `auth.py`). Logging
+goes to stderr so the platform collects it.
 """
 
 import logging
 import os
 import sys
-from datetime import date
+from datetime import datetime
 from pathlib import Path
 from typing import Literal
+from zoneinfo import ZoneInfo
 
 logging.basicConfig(
     level=logging.INFO,
@@ -18,8 +19,10 @@ logging.basicConfig(
 )
 
 from mcp.server.fastmcp import FastMCP  # noqa: E402
+from starlette.responses import JSONResponse  # noqa: E402
 
 from bunpro_mcp import ingest  # noqa: E402
+from bunpro_mcp.auth import BearerAuthMiddleware, require_token_env  # noqa: E402
 from bunpro_mcp.ingest import make_item  # noqa: E402
 from bunpro_mcp.models import (  # noqa: E402
     AddReport,
@@ -34,26 +37,80 @@ from bunpro_mcp.models import (  # noqa: E402
     QueueResponse,
 )
 from bunpro_mcp.scoring import apply_grade, is_mastered, to_queue_entry  # noqa: E402
+from bunpro_mcp.storage import GCSBackend  # noqa: E402
 from bunpro_mcp.vault import Vault  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
 GRAMMAR_FOCUS_MAX = 3
 
+# The learner is in UTC+8 and the container is in UTC. Without this, a
+# review at 9pm local lands on tomorrow's date and the SRS schedule drifts
+# a day — so the day boundary follows the learner, not the machine.
+DEFAULT_TIMEZONE = "Asia/Singapore"
+DEFAULT_PORT = 8080
+
 
 class ItemNotFound(Exception):
     pass
 
 
-vault_path_raw = os.environ.get("VAULT_PATH")
-if not vault_path_raw:
-    raise RuntimeError(
-        "VAULT_PATH environment variable is not set. Point it at the Obsidian "
-        "vault folder that holds the Japanese notes."
-    )
-vault = Vault(Path(vault_path_raw))
+def _today():
+    return datetime.now(ZoneInfo(os.environ.get("TZ") or DEFAULT_TIMEZONE)).date()
 
-mcp = FastMCP("bunpro")
+
+def _port() -> int:
+    return int(os.environ.get("PORT") or DEFAULT_PORT)
+
+
+# Config is validated at import so a misconfigured deploy dies immediately
+# rather than 500ing on the first tool call. Reaching the bucket is *not*
+# checked here: a transient GCS blip at boot would stop the revision ever
+# going healthy, and the platform would loop restarting it.
+VAULT_BUCKET = os.environ.get("VAULT_BUCKET")
+VAULT_PATH = os.environ.get("VAULT_PATH")
+if not VAULT_BUCKET and not VAULT_PATH:
+    raise RuntimeError(
+        "Set VAULT_BUCKET (GCS bucket holding the notes) for a deployed server, "
+        "or VAULT_PATH (local folder) for local runs. Neither is set."
+    )
+
+_vault: Vault | None = None
+
+
+def get_vault() -> Vault:
+    """The vault, built on first use rather than at import.
+
+    Lazy because construction lists the bucket, and that is a network call
+    no import should depend on.
+    """
+    global _vault
+    if _vault is None:
+        if VAULT_BUCKET:
+            _vault = Vault(backend=GCSBackend(VAULT_BUCKET))
+        else:
+            _vault = Vault(Path(VAULT_PATH))
+    return _vault
+
+
+mcp = FastMCP(
+    "bunpro",
+    host="0.0.0.0",
+    port=_port(),
+    # Every tool is a self-contained request/response — nothing streams and
+    # nothing is remembered between calls, so any instance can serve any
+    # request and there are no sessions to lose when the platform scales to
+    # zero between reviews.
+    stateless_http=True,
+)
+
+
+@mcp.custom_route("/health", methods=["GET"])
+async def health(request):
+    """Liveness only. Deliberately does not touch the bucket — a probe that
+    fails on a transient storage error would take down a server that is
+    otherwise fine."""
+    return JSONResponse({"status": "ok"})
 
 
 @mcp.tool()
@@ -65,8 +122,10 @@ def get_review_queue(
     priority. Call this at the start of a review session. Returns grammar
     points and vocabulary with a freshness score for each, plus a note on
     how the learner last got it wrong."""
-    today = date.today()
-    all_items = [item for item in vault.load_all() if not item.suspended]
+    today = _today()
+    everything = get_vault().load_all()
+    total_items = len(everything)  # everything in the vault, suspended included
+    all_items = [item for item in everything if not item.suspended]
 
     all_entries = [to_queue_entry(item, today) for item in all_items]
 
@@ -83,7 +142,7 @@ def get_review_queue(
 
     return QueueResponse(
         generated_at=today,
-        total_items=len(vault.load_all()),
+        total_items=total_items,
         returned=len(queue),
         grammar_focus=grammar_focus,
         queue=queue,
@@ -109,8 +168,8 @@ def get_practice_pool(
     fluent use 3 or 4, hesitation 2, and a blank or misuse 1 with a
     one-sentence error_note. Returns each item with its meaning and reading so
     you can select by theme."""
-    today = date.today()
-    mastered = [i for i in vault.load_all() if not i.suspended and is_mastered(i)]
+    today = _today()
+    mastered = [i for i in get_vault().load_all() if not i.suspended and is_mastered(i)]
     selected = mastered if kind == "both" else [i for i in mastered if i.kind == kind]
     selected.sort(key=lambda i: i.memory.stability, reverse=True)
     pool = [to_queue_entry(i, today) for i in selected[:limit]]
@@ -127,13 +186,13 @@ def get_practice_pool(
 def get_item(item_id: str) -> ItemDetail:
     """Get everything known about one Japanese grammar point or word,
     including the learner's own notes from their vault."""
-    detail = vault.get_detail(item_id)
+    detail = get_vault().get_detail(item_id)
     if detail is None:
         raise ItemNotFound(
             f"No item with id {item_id!r}. Call get_review_queue to see valid ids."
         )
     item, body = detail
-    entry = to_queue_entry(item, date.today())
+    entry = to_queue_entry(item, _today())
     return ItemDetail(**entry.model_dump(), body=body)
 
 
@@ -144,7 +203,8 @@ def submit_grades(grades: list[Grade]) -> GradeReport:
     Grade 1 = could not recall or used it wrong, 2 = struggled, 3 = correct,
     4 = effortless. Include a one-sentence error_note when they got it
     wrong, describing the specific mistake."""
-    today = date.today()
+    today = _today()
+    vault = get_vault()
     updated = 0
     unknown_ids: list[str] = []
     summary: list[str] = []
@@ -189,7 +249,8 @@ def add_item(
     starts from their actual familiarity instead of treating it as brand
     new. Leave `progress` unset for something they are meeting for the
     first time."""
-    today = date.today()
+    today = _today()
+    vault = get_vault()
     candidate = make_item(
         surface, kind, today, reading=reading, meaning=meaning, level=level, progress=progress
     )
@@ -207,13 +268,21 @@ def add_item(
 
 
 @mcp.tool()
-def import_export(csv_path: str, dry_run: bool = True) -> ImportReport:
-    """Import a Bunpro CSV export into the vault. ALWAYS run with
-    dry_run=true first and show the learner the report before running for
-    real."""
-    today = date.today()
-    return ingest.import_export(vault, Path(csv_path), today, dry_run)
+def import_export(csv_content: str, dry_run: bool = True) -> ImportReport:
+    """Import a Bunpro CSV export into the vault. Pass the CSV's *contents*
+    as text, not a filename. ALWAYS run with dry_run=true first and show the
+    learner the report before running for real."""
+    return ingest.import_export(get_vault(), csv_content, _today(), dry_run)
+
+
+def main() -> None:
+    import uvicorn
+
+    require_token_env()
+    app = mcp.streamable_http_app()
+    app.add_middleware(BearerAuthMiddleware)
+    uvicorn.run(app, host="0.0.0.0", port=_port())
 
 
 if __name__ == "__main__":
-    mcp.run()
+    main()

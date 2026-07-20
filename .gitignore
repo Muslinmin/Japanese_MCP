@@ -24,4 +24,8 @@ ENV/
 .vscode/
 .idea/
 .DS_Store
-EOF
+
+# A gcloud SDK install landed here when the installer took its own
+# "exec -l /bin/bash" hint as a destination path. ~/.bashrc sources it,
+# so it is live — ignored rather than deleted. Worth relocating.
+exec -l\ /

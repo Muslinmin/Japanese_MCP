@@ -5,12 +5,13 @@ export format changes there is exactly one file to fix.
 
 The real export (zyaga Bunpro Exporter userscript) is vocab-only, with
 columns "word", "reading", "description", "progress" — not the richer
-shape originally assumed. See IMPORT_FIX.md for the full story.
+shape originally assumed.
 """
 
 from __future__ import annotations
 
 import csv
+import io
 import re
 from datetime import date
 from pathlib import Path
@@ -93,9 +94,13 @@ def make_item(
 
 
 def parse_bunpro_csv(
-    csv_path: Path, today: date | None = None
+    csv_content: str, today: date | None = None
 ) -> tuple[list[Item], list[str], list[str]]:
-    """Parse a Bunpro export. Returns (items, skipped, errors).
+    """Parse a Bunpro export from CSV *text*. Returns (items, skipped, errors).
+
+    Text rather than a path because the server that calls this runs on a
+    different machine than the person holding the export — there is no
+    server-side file for them to point at.
 
     The export is vocab-only (the userscript hardcodes this) — every row
     becomes `kind="vocab"`. `skipped` holds per-row reasons a row was
@@ -103,70 +108,77 @@ def parse_bunpro_csv(
     or a row that had to fall back to using the surface as its reading).
     Unknown columns are ignored silently.
     """
-    if not csv_path.exists():
-        raise FileNotFoundError(f"CSV file not found: {csv_path}")
-
     effective_today = today if today is not None else date.today()
 
     items: list[Item] = []
     skipped: list[str] = []
     errors: list[str] = []
 
-    with csv_path.open(newline="", encoding="utf-8") as f:
-        reader = csv.DictReader(f)
-        fieldnames = set(reader.fieldnames or [])
+    reader = csv.DictReader(io.StringIO(csv_content, newline=""))
+    fieldnames = set(reader.fieldnames or [])
 
-        if not fieldnames:
-            errors.append("CSV file has no header row")
-            return items, skipped, errors
+    if not fieldnames:
+        errors.append("CSV file has no header row")
+        return items, skipped, errors
 
-        for expected in EXPECTED_COLUMNS:
-            if expected not in fieldnames:
-                errors.append(f"Missing expected column: {expected!r}")
+    for expected in EXPECTED_COLUMNS:
+        if expected not in fieldnames:
+            errors.append(f"Missing expected column: {expected!r}")
 
-        for line_no, row in enumerate(reader, start=2):  # header is row 1
-            surface = (row.get("word") or "").strip()
-            if not surface:
-                skipped.append(f"Row {line_no}: missing 'word'")
-                continue
+    for line_no, row in enumerate(reader, start=2):  # header is row 1
+        surface = (row.get("word") or "").strip()
+        if not surface:
+            skipped.append(f"Row {line_no}: missing 'word'")
+            continue
 
-            meaning = (row.get("description") or "").strip() or None
+        meaning = (row.get("description") or "").strip() or None
 
-            reading = (row.get("reading") or "").strip() or None
-            if reading is None:
-                reading = surface
-                errors.append(f"no reading available, used surface as reading: {surface}")
+        reading = (row.get("reading") or "").strip() or None
+        if reading is None:
+            reading = surface
+            errors.append(f"no reading available, used surface as reading: {surface}")
 
-            progress = (row.get("progress") or "").strip()
-            memory = _seed_memory_state(progress, effective_today)
+        progress = (row.get("progress") or "").strip()
+        memory = _seed_memory_state(progress, effective_today)
 
-            items.append(
-                Item(
-                    id=_make_id(surface, "vocab", reading),
-                    kind="vocab",
-                    surface=surface,
-                    reading=reading,
-                    meaning=meaning,
-                    level=None,
-                    source="bunpro",
-                    bunpro_srs=None,
-                    bunpro_url=None,
-                    first_seen=effective_today,
-                    memory=memory,
-                )
+        items.append(
+            Item(
+                id=_make_id(surface, "vocab", reading),
+                kind="vocab",
+                surface=surface,
+                reading=reading,
+                meaning=meaning,
+                level=None,
+                source="bunpro",
+                bunpro_srs=None,
+                bunpro_url=None,
+                first_seen=effective_today,
+                memory=memory,
             )
+        )
 
     return items, skipped, errors
 
 
-def import_export(vault: Vault, csv_path: Path, today: date, dry_run: bool) -> ImportReport:
+def parse_bunpro_csv_path(
+    csv_path: Path, today: date | None = None
+) -> tuple[list[Item], list[str], list[str]]:
+    """Read a CSV off disk and parse it. Convenience for local runs and
+    fixtures; the server never has a path to give."""
+    csv_path = Path(csv_path)
+    if not csv_path.exists():
+        raise FileNotFoundError(f"CSV file not found: {csv_path}")
+    return parse_bunpro_csv(csv_path.read_text(encoding="utf-8"), today=today)
+
+
+def import_export(vault: Vault, csv_content: str, today: date, dry_run: bool) -> ImportReport:
     """Import a Bunpro CSV export. dry_run=True computes counts and writes
     nothing. On creation, seeds memory state from the `progress` bucket. On
     update of an existing item, touches only import-owned fields: reading,
     meaning. Never memory state, suspended, tags, or prose — a re-import
     must never re-seed and wipe real review history. first_seen on an
     existing item is never rewritten."""
-    items, skipped, errors = parse_bunpro_csv(csv_path, today=today)
+    items, skipped, errors = parse_bunpro_csv(csv_content, today=today)
 
     would_create = 0
     would_update = 0

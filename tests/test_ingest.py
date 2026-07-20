@@ -3,13 +3,21 @@ from pathlib import Path
 
 import pytest
 
-from bunpro_mcp.ingest import BUCKET_SEED, DEFAULT_SEED, import_export, make_item, parse_bunpro_csv
+from bunpro_mcp.ingest import (
+    BUCKET_SEED,
+    DEFAULT_SEED,
+    import_export,
+    make_item,
+    parse_bunpro_csv,
+    parse_bunpro_csv_path,
+)
 from bunpro_mcp.scoring import apply_grade
 from bunpro_mcp.vault import Vault
 
 TODAY = date(2026, 7, 15)
 
 FIXTURE = Path(__file__).parent.parent / "fixtures" / "sample_bunpro.csv"
+FIXTURE_TEXT = FIXTURE.read_text(encoding="utf-8")
 
 
 def write_csv(tmp_path: Path, text: str) -> Path:
@@ -19,7 +27,7 @@ def write_csv(tmp_path: Path, text: str) -> Path:
 
 
 def test_parse_fixture_csv():
-    items, skipped, errors = parse_bunpro_csv(FIXTURE, today=TODAY)
+    items, skipped, errors = parse_bunpro_csv_path(FIXTURE, today=TODAY)
 
     assert len(items) == 3
     assert skipped == []
@@ -33,7 +41,7 @@ def test_parse_fixture_csv():
 
 
 def test_parse_seeds_stability_only_from_progress_bucket():
-    items, _, _ = parse_bunpro_csv(FIXTURE, today=TODAY)
+    items, _, _ = parse_bunpro_csv_path(FIXTURE, today=TODAY)
 
     master = next(i for i in items if i.surface == "面倒くさい")
     assert master.memory.stability == BUCKET_SEED["Master"]
@@ -53,7 +61,7 @@ def test_parse_seeds_stability_only_from_progress_bucket():
 def test_parse_blank_progress_uses_default_seed_and_is_not_an_error(tmp_path: Path):
     csv_text = '"word","reading","description","progress"\n"猫","ねこ","cat",""\n'
     path = write_csv(tmp_path, csv_text)
-    items, skipped, errors = parse_bunpro_csv(path, today=TODAY)
+    items, skipped, errors = parse_bunpro_csv_path(path, today=TODAY)
 
     assert len(items) == 1
     assert skipped == []
@@ -65,7 +73,7 @@ def test_parse_blank_progress_uses_default_seed_and_is_not_an_error(tmp_path: Pa
 def test_parse_unknown_progress_uses_default_seed_and_is_not_an_error(tmp_path: Path):
     csv_text = '"word","reading","description","progress"\n"猫","ねこ","cat","Legendary"\n'
     path = write_csv(tmp_path, csv_text)
-    items, skipped, errors = parse_bunpro_csv(path, today=TODAY)
+    items, skipped, errors = parse_bunpro_csv_path(path, today=TODAY)
 
     assert len(items) == 1
     assert errors == []
@@ -75,7 +83,7 @@ def test_parse_unknown_progress_uses_default_seed_and_is_not_an_error(tmp_path: 
 def test_parse_skips_row_missing_word(tmp_path: Path):
     csv_text = '"word","reading","description","progress"\n"","","cat","Master"\n'
     path = write_csv(tmp_path, csv_text)
-    items, skipped, _ = parse_bunpro_csv(path, today=TODAY)
+    items, skipped, _ = parse_bunpro_csv_path(path, today=TODAY)
 
     assert items == []
     assert any("missing 'word'" in s for s in skipped)
@@ -84,7 +92,7 @@ def test_parse_skips_row_missing_word(tmp_path: Path):
 def test_parse_missing_reading_column_falls_back_to_surface(tmp_path: Path):
     csv_text = '"word","description","progress"\n"猫","cat","Master"\n'
     path = write_csv(tmp_path, csv_text)
-    items, skipped, errors = parse_bunpro_csv(path, today=TODAY)
+    items, skipped, errors = parse_bunpro_csv_path(path, today=TODAY)
 
     assert len(items) == 1
     assert items[0].reading == "猫"
@@ -99,7 +107,7 @@ def test_parse_blank_reading_cell_falls_back_to_surface(tmp_path: Path):
         '"犬","","dog","Adept"\n'
     )
     path = write_csv(tmp_path, csv_text)
-    items, _, errors = parse_bunpro_csv(path, today=TODAY)
+    items, _, errors = parse_bunpro_csv_path(path, today=TODAY)
 
     neko = next(i for i in items if i.surface == "猫")
     inu = next(i for i in items if i.surface == "犬")
@@ -115,7 +123,7 @@ def test_parse_unknown_columns_ignored_silently(tmp_path: Path):
         '"猫","ねこ","cat","Master","surprise"\n'
     )
     path = write_csv(tmp_path, csv_text)
-    items, skipped, errors = parse_bunpro_csv(path, today=TODAY)
+    items, skipped, errors = parse_bunpro_csv_path(path, today=TODAY)
 
     assert len(items) == 1
     assert skipped == []
@@ -124,7 +132,7 @@ def test_parse_unknown_columns_ignored_silently(tmp_path: Path):
 
 def test_parse_missing_csv_raises(tmp_path: Path):
     with pytest.raises(FileNotFoundError):
-        parse_bunpro_csv(tmp_path / "does-not-exist.csv", today=TODAY)
+        parse_bunpro_csv_path(tmp_path / "does-not-exist.csv", today=TODAY)
 
 
 def test_make_item_manual_vocab_defaults():
@@ -158,7 +166,7 @@ def test_make_item_with_progress_matches_csv_import_seeding():
     """A manually-added word stated at a bucket and an imported word from
     the same bucket must start on the identical schedule."""
     manual = make_item("面倒くさい", "vocab", TODAY, reading="めんどくさい", progress="Master")
-    imported, _, _ = parse_bunpro_csv(FIXTURE, today=TODAY)
+    imported, _, _ = parse_bunpro_csv_path(FIXTURE, today=TODAY)
     imported_master = next(i for i in imported if i.surface == "面倒くさい")
 
     assert manual.memory.stability == imported_master.memory.stability
@@ -167,7 +175,7 @@ def test_make_item_with_progress_matches_csv_import_seeding():
 
 def test_import_dry_run_writes_nothing(tmp_path: Path):
     vault = Vault(tmp_path)
-    report = import_export(vault, FIXTURE, TODAY, dry_run=True)
+    report = import_export(vault, FIXTURE_TEXT, TODAY, dry_run=True)
 
     assert report.dry_run is True
     assert report.rows_read == 3
@@ -179,7 +187,7 @@ def test_import_dry_run_writes_nothing(tmp_path: Path):
 
 def test_import_real_run_creates_notes_with_seeded_memory(tmp_path: Path):
     vault = Vault(tmp_path)
-    report = import_export(vault, FIXTURE, TODAY, dry_run=False)
+    report = import_export(vault, FIXTURE_TEXT, TODAY, dry_run=False)
 
     assert report.would_create == 3
     assert len(vault.load_all()) == 3
@@ -192,9 +200,9 @@ def test_import_real_run_creates_notes_with_seeded_memory(tmp_path: Path):
 
 def test_import_second_run_updates_without_duplicating(tmp_path: Path):
     vault = Vault(tmp_path)
-    import_export(vault, FIXTURE, TODAY, dry_run=False)
+    import_export(vault, FIXTURE_TEXT, TODAY, dry_run=False)
 
-    report2 = import_export(vault, FIXTURE, TODAY, dry_run=False)
+    report2 = import_export(vault, FIXTURE_TEXT, TODAY, dry_run=False)
 
     assert report2.would_create == 0
     assert report2.would_update == 3
@@ -203,7 +211,7 @@ def test_import_second_run_updates_without_duplicating(tmp_path: Path):
 
 def test_reimport_does_not_reseed_and_wipe_review_history(tmp_path: Path):
     vault = Vault(tmp_path)
-    import_export(vault, FIXTURE, TODAY, dry_run=False)
+    import_export(vault, FIXTURE_TEXT, TODAY, dry_run=False)
 
     item_id = "vocab-面倒くさい-めんどくさい"
     item = vault.get(item_id)
@@ -211,7 +219,7 @@ def test_reimport_does_not_reseed_and_wipe_review_history(tmp_path: Path):
     vault.write_memory(item_id, graded_state)
 
     later = date(2026, 8, 1)
-    import_export(vault, FIXTURE, later, dry_run=False)
+    import_export(vault, FIXTURE_TEXT, later, dry_run=False)
 
     reloaded = vault.get(item_id)
     assert reloaded.memory == graded_state
@@ -220,7 +228,7 @@ def test_reimport_does_not_reseed_and_wipe_review_history(tmp_path: Path):
 
 def test_import_updates_only_import_owned_fields_preserves_tags_and_prose(tmp_path: Path):
     vault = Vault(tmp_path)
-    import_export(vault, FIXTURE, TODAY, dry_run=False)
+    import_export(vault, FIXTURE_TEXT, TODAY, dry_run=False)
 
     item_id = "vocab-面倒くさい-めんどくさい"
     item = vault.get(item_id)
@@ -228,9 +236,35 @@ def test_import_updates_only_import_owned_fields_preserves_tags_and_prose(tmp_pa
     item.suspended = True
     vault.upsert(item, body="my mnemonic")
 
-    import_export(vault, FIXTURE, TODAY, dry_run=False)
+    import_export(vault, FIXTURE_TEXT, TODAY, dry_run=False)
 
     reloaded, prose = vault.get_detail(item_id)
     assert reloaded.tags == ["leech"]
     assert reloaded.suspended is True
     assert "my mnemonic" in prose
+
+
+def test_parse_accepts_csv_text_directly():
+    """The tool receives CSV contents over the wire, never a server-side path."""
+    items, skipped, errors = parse_bunpro_csv(FIXTURE_TEXT, today=TODAY)
+
+    assert len(items) == 3
+    assert skipped == []
+    assert errors == []
+
+
+def test_text_and_path_entry_points_agree():
+    from_text = parse_bunpro_csv(FIXTURE_TEXT, today=TODAY)
+    from_path = parse_bunpro_csv_path(FIXTURE, today=TODAY)
+
+    assert [i.id for i in from_text[0]] == [i.id for i in from_path[0]]
+
+
+def test_parse_text_handles_crlf_line_endings():
+    """A CSV pasted out of a browser on Windows arrives with \\r\\n."""
+    csv_text = '"word","reading","description","progress"\r\n"猫","ねこ","cat","Adept"\r\n'
+    items, skipped, errors = parse_bunpro_csv(csv_text, today=TODAY)
+
+    assert len(items) == 1
+    assert items[0].meaning == "cat"
+    assert skipped == []

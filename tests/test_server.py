@@ -31,9 +31,12 @@ def _item(vault: Vault, id_: str, kind: str, stability: float, suspended: bool =
 def _load_server(tmp_path: Path):
     """Import server against a temp vault, then point it at the populated one."""
     os.environ["VAULT_PATH"] = str(tmp_path)
+    os.environ.setdefault("MCP_AUTH_TOKEN", "test-token")
     import bunpro_mcp.server as server
 
-    server.vault = Vault(tmp_path)  # rebuild index after notes are written
+    # The vault is built lazily and then cached, so overwrite the cache
+    # rather than the env — each test has its own tmp_path.
+    server._vault = Vault(tmp_path)
     return server
 
 
@@ -78,3 +81,38 @@ def test_practice_pool_excludes_suspended_and_respects_limit(tmp_path: Path):
     assert [e.id for e in resp.pool] == ["vocab-a-a"]  # strongest non-suspended, capped at 1
     assert resp.total_mastered == 2  # suspended item excluded from the count too
     assert resp.returned == 1
+
+
+def test_review_queue_total_counts_suspended_items(tmp_path: Path):
+    """total_items is everything in the vault, not just what's returned —
+    the single-load rewrite has to keep counting suspended items."""
+    scratch = Vault(tmp_path)
+    _item(scratch, "vocab-a-a", "vocab", stability=10.0)
+    _item(scratch, "vocab-hidden-hidden", "vocab", stability=10.0, suspended=True)
+
+    server = _load_server(tmp_path)
+    resp = server.get_review_queue()
+
+    assert resp.total_items == 2
+    assert [e.id for e in resp.queue] == ["vocab-a-a"]  # suspended not reviewable
+
+
+def test_today_follows_the_configured_timezone(tmp_path: Path, monkeypatch):
+    """Just past midnight in Singapore is still yesterday in UTC. The SRS
+    day has to roll over for the learner, not for the container."""
+    from datetime import datetime, timezone
+
+    server = _load_server(tmp_path)
+
+    class FakeDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime(2026, 7, 20, 17, 30, tzinfo=timezone.utc).astimezone(tz)
+
+    monkeypatch.setattr(server, "datetime", FakeDatetime)
+
+    monkeypatch.setenv("TZ", "Asia/Singapore")
+    assert server._today() == date(2026, 7, 21)  # 01:30 the next day, locally
+
+    monkeypatch.setenv("TZ", "UTC")
+    assert server._today() == date(2026, 7, 20)
